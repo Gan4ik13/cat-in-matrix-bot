@@ -15,6 +15,7 @@ import sys
 import json
 import time
 import random
+import re
 import hashlib
 import sqlite3
 import logging
@@ -44,13 +45,11 @@ OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 PORT = int(os.environ.get("PORT", 8080))
 
 OPENROUTER_MODELS = [
-    "qwen/qwen3-coder:free",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "google/gemma-3-27b-it:free",
     "mistralai/mistral-small-3.2-24b-instruct:free",
-    "deepseek/deepseek-r1-0528:free",
     "meta-llama/llama-4-maverick:free",
+    "qwen/qwen3-30b-a3b:free",
 ]
 
 # ============================================================
@@ -70,6 +69,7 @@ def _init_db():
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             source        TEXT NOT NULL DEFAULT 'generated',
             body          TEXT NOT NULL,
+            image_url     TEXT,
             signature     TEXT,
             status        TEXT NOT NULL DEFAULT 'pending',
             created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -82,6 +82,11 @@ def _init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+    try:
+        _conn.execute("ALTER TABLE posts ADD COLUMN image_url TEXT")
+        _conn.commit()
+    except Exception:
+        pass
 
 
 def _signature(text: str) -> str:
@@ -89,26 +94,26 @@ def _signature(text: str) -> str:
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
 
-def _add_post(body: str) -> bool:
+def _add_post(body: str, image_url: str | None = None) -> bool:
     sig = _signature(body)
     cur = _conn.execute("SELECT 1 FROM posts WHERE signature = ? LIMIT 1", (sig,))
     if cur.fetchone():
         log.warning("Дубликат пропущен: %s...", body[:60])
         return False
     _conn.execute(
-        "INSERT INTO posts (body, signature, status) VALUES (?, ?, 'pending')",
-        (body, sig),
+        "INSERT INTO posts (body, image_url, signature, status) VALUES (?, ?, ?, 'pending')",
+        (body, image_url, sig),
     )
     _conn.commit()
     return True
 
 
-def _get_pending() -> str | None:
+def _get_pending() -> tuple | None:
     cur = _conn.execute(
-        "SELECT id, body FROM posts WHERE status='pending' ORDER BY created_at LIMIT 1"
+        "SELECT id, body, image_url FROM posts WHERE status='pending' ORDER BY created_at LIMIT 1"
     )
     row = cur.fetchone()
-    return (row["id"], row["body"]) if row else None
+    return (row["id"], row["body"], row["image_url"]) if row else None
 
 
 def _mark_published(post_id: int):
@@ -147,11 +152,21 @@ def _save_published_hash(text: str):
 # ============================================================
 
 TOPIC = "Коты, мемы, технологии и забавные истории из жизни котов-программистов"
-SYSTEM_PROMPT = f"""Ты — редактор развлекательного Telegram-канала «Кот в матрице».
-Тематика: {TOPIC}.
-Стиль: лёгкий, весёлый, с юмором и иронией, много эмодзи 🐱🤖.
-Можно шутить про котов-программистов, AI, матрицу, нейросети.
-Объём: 200–600 символов. Без хэштегов. Начни с эмодзи."""
+SYSTEM_PROMPT = """Ты — редактор Telegram-канала «Кот в матрице».
+
+ПРАВИЛА (строго):
+- Ответ ТОЛЬКО готовый пост. Никаких рассуждений, планов, подсчётов символов.
+- Никогда не пиши "Let's count", "We need", "I'll write" и т.п.
+- Никогда не показывай процесс создания поста.
+- Объём: 50–200 символов. Коротко и смешно.
+- Начни с эмодзи. Без хэштегов.
+- Стиль: короткая шутка/наблюдение про котов и технологии.
+
+Примеры ХОРОШИХ постов:
+🐱 Кошки не ловят мышей. Они проводят тренировки.
+🤖 Мой кот сидит на клавиатуре. Git blame показывает на него.
+🧠 Если кот смотрит в пустоту — значит он обновляет прошивку.
+⚡ Wi-Fi работает медленнее, когда кот лежит на роутере. Это не баг, это фича."""
 
 CAT_FACTS = [
     "Кошки тратят 70% жизни на сон, а оставшиеся 30% — на то, чтобы судить тебя.",
@@ -199,6 +214,48 @@ def _next_model() -> str:
     return model
 
 
+def _strip_thinking(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<scratchpad>.*?</scratchpad>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<\|think\|>.*?<\|think\|>", "", text, flags=re.DOTALL)
+    text = re.sub(r"\*\*.*?\*\*\s*\n", "", text)
+    lines = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        skip_words = [
+            "let's", "we need", "i'll", "now count", "string:",
+            "let me", "we'll", "should be", "approximately",
+            "characters", "hashtag", "let's count", "i need",
+        ]
+        if any(w in line.lower() for w in skip_words):
+            continue
+        if line.startswith("**") and ":" in line:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _get_cat_image_url() -> str | None:
+    try:
+        resp = requests.get("https://api.thecatapi.com/v1/images/search", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data and len(data) > 0:
+            return data[0].get("url")
+    except Exception as e:
+        log.warning("Cat API error: %s", e)
+    try:
+        resp = requests.get("https://cataas.com/cat", timeout=10, allow_redirects=True)
+        if resp.status_code == 200:
+            return resp.url
+    except Exception as e:
+        log.warning("CATAAS error: %s", e)
+    return None
+
+
 def _generate_llm() -> str | None:
     if not OPENROUTER_KEY:
         return None
@@ -224,10 +281,10 @@ def _generate_llm() -> str | None:
                     "model": model,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": "Придумай новый оригинальный пост про котов и технологии. Не повторяй предыдущие темы."},
+                        {"role": "user", "content": "Напиши один короткий смешной пост про кота и технологии. Максимум 200 символов. Только готовый пост, без рассуждений."},
                     ],
                     "temperature": 0.9,
-                    "max_tokens": 400,
+                    "max_tokens": 150,
                 },
                 timeout=60,
             )
@@ -240,7 +297,8 @@ def _generate_llm() -> str | None:
             resp.raise_for_status()
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
-            if len(text) > 50:
+            text = _strip_thinking(text)
+            if len(text) > 20:
                 log.info("LLM: успешно с моделью %s (%d символов)", model, len(text))
                 return text
             log.warning("LLM: слишком короткий ответ от %s", model)
@@ -258,24 +316,33 @@ def _generate_template() -> str:
     return f"{emoji} {fact}\n\n{closing}"
 
 
-def _generate_one() -> str:
+def _generate_one() -> tuple[str, str | None]:
     post = _generate_llm()
     if not post:
         post = _generate_template()
-    return post
+    image_url = _get_cat_image_url()
+    return post, image_url
 
 
 # ============================================================
 #  Публикация в Telegram
 # ============================================================
 
-def _send_to_tg(text: str) -> bool:
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TG_CHANNEL,
-        "text": text,
-        "disable_web_page_preview": True,
-    }
+def _send_to_tg(text: str, image_url: str | None = None) -> bool:
+    if image_url:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto"
+        payload = {
+            "chat_id": TG_CHANNEL,
+            "photo": image_url,
+            "caption": text,
+        }
+    else:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TG_CHANNEL,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
     try:
         resp = requests.post(url, json=payload, timeout=30)
         resp.raise_for_status()
@@ -304,8 +371,8 @@ def job_sourcing():
     target = 5
     added = 0
     for i in range(target):
-        post = _generate_one()
-        if _add_post(post):
+        post, image_url = _generate_one()
+        if _add_post(post, image_url):
             added += 1
         time.sleep(2)
 
@@ -313,7 +380,8 @@ def job_sourcing():
         log.warning("LLM не сработал, добавляем шаблонные посты")
         for i in range(3):
             post = _generate_template()
-            if _add_post(post):
+            image_url = _get_cat_image_url()
+            if _add_post(post, image_url):
                 added += 1
 
     log.info("=== SOURCING завершён: добавлено %d постов (всего: %d) ===",
@@ -331,10 +399,10 @@ def job_publishing():
             log.warning("Всё равно пусто, пропускаем")
             return
 
-    post_id, body = result
+    post_id, body, image_url = result
     log.info("Публикуем: %s...", body[:80])
 
-    if _send_to_tg(body):
+    if _send_to_tg(body, image_url):
         _mark_published(post_id)
         _save_published_hash(body)
         log.info("Опубликовано! В очереди: %d", _pending_count())
