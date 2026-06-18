@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: cat-in-matrix
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python render_bot.py
+    envVars:
+      - key: TG_BOT_TOKEN
+        sync: false
+      - key: TG_CHANNEL
+        value: "@cat_in_matrixx"
+      - key: OPENROUTER_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: "qwen/qwen3-coder:free"
+      - key: PYTHON_VERSION
+        value: "3.12.0"

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+data/
+*.db
+state.json
+queue.json
+.env
+
+# other projects
+polymarket-rub/
+pulse/
+-p/
