@@ -184,31 +184,38 @@ CLOSINGS = [
 def _generate_llm() -> str | None:
     if not OPENROUTER_KEY:
         return None
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": OPENROUTER_MODEL,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": "Придумай новый оригинальный пост про котов и технологии."},
-                ],
-                "temperature": 0.9,
-                "max_tokens": 400,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"].strip()
-        if len(text) > 50:
-            return text
-    except Exception as e:
-        log.warning("LLM генерация не удалась: %s", e)
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": "Придумай новый оригинальный пост про котов и технологии. Не повторяй предыдущие темы."},
+                    ],
+                    "temperature": 0.9,
+                    "max_tokens": 400,
+                },
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                wait = 15 * (attempt + 1)
+                log.warning("Rate limit (429), ждём %d сек...", wait)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            if len(text) > 50:
+                return text
+        except Exception as e:
+            log.warning("LLM генерация не удалась (попытка %d): %s", attempt + 1, e)
+            time.sleep(5)
     return None
 
 
@@ -264,11 +271,11 @@ def job_sourcing():
 
     target = 5
     added = 0
-    for _ in range(target):
+    for i in range(target):
         post = _generate_one()
         if _add_post(post):
             added += 1
-        time.sleep(1)
+        time.sleep(5)
 
     log.info("=== SOURCING завершён: добавлено %d постов (всего: %d) ===",
              added, _pending_count())
@@ -322,7 +329,7 @@ async def self_ping():
             log.warning("Self-ping failed: %s", e)
 
 
-start_time = datetime.utcnow()
+start_time = datetime.now()
 
 
 # ============================================================
@@ -344,42 +351,37 @@ def main():
         log.info("Стартовое наполнение очереди...")
         job_sourcing()
 
-    # Планировщик
-    scheduler = AsyncIOScheduler(timezone="UTC")
-
-    # Sourcing каждые 6 часов
-    scheduler.add_job(
-        job_sourcing,
-        CronTrigger.from_crontab("0 */6 * * *"),
-        id="sourcing",
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Publishing 4 раза в день
-    scheduler.add_job(
-        job_publishing,
-        CronTrigger.from_crontab("0 9,13,18,21 * * *"),
-        id="publishing",
-        max_instances=1,
-        coalesce=True,
-    )
-
-    scheduler.start()
-
-    # aiohttp
+    # aiohttp + scheduler — всё внутри event loop
     app = aiohttp.web.Application()
     app.router.add_get("/health", handle_health)
 
     runner = aiohttp.web.AppRunner(app)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     async def start():
+        # HTTP server
         await runner.setup()
         site = aiohttp.web.TCPSite(runner, "0.0.0.0", PORT)
         await site.start()
         log.info("HTTP сервер на порту %d", PORT)
+
+        # APScheduler — start inside running event loop
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(
+            job_sourcing,
+            CronTrigger.from_crontab("0 */6 * * *"),
+            id="sourcing",
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.add_job(
+            job_publishing,
+            CronTrigger.from_crontab("0 9,13,18,21 * * *"),
+            id="publishing",
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        log.info("Планировщик запущен")
 
         # Self-ping в фоне
         asyncio.ensure_future(self_ping())
@@ -395,11 +397,9 @@ def main():
             await runner.cleanup()
 
     try:
-        loop.run_until_complete(start())
+        asyncio.run(start())
     except KeyboardInterrupt:
         log.info("Остановлен пользователем")
-    finally:
-        loop.close()
 
 
 if __name__ == "__main__":
