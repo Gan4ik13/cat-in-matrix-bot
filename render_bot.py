@@ -41,8 +41,17 @@ log = logging.getLogger("bot")
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHANNEL = os.environ.get("TG_CHANNEL", "@cat_in_matrixx")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "qwen/qwen3-coder:free")
 PORT = int(os.environ.get("PORT", 8080))
+
+OPENROUTER_MODELS = [
+    "qwen/qwen3-coder:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "google/gemma-3-27b-it:free",
+    "mistralai/mistral-small-3.2-24b-instruct:free",
+    "deepseek/deepseek-r1-0528:free",
+    "meta-llama/llama-4-maverick:free",
+]
 
 # ============================================================
 #  SQLite: очередь + дедупликация
@@ -181,11 +190,30 @@ CLOSINGS = [
 ]
 
 
+_model_index = 0
+
+
+def _next_model() -> str:
+    global _model_index
+    model = OPENROUTER_MODELS[_model_index % len(OPENROUTER_MODELS)]
+    return model
+
+
 def _generate_llm() -> str | None:
     if not OPENROUTER_KEY:
         return None
-    for attempt in range(3):
+    tried = set()
+    for attempt in range(len(OPENROUTER_MODELS)):
+        model = _next_model()
+        if model in tried:
+            global _model_index
+            _model_index += 1
+            if len(tried) >= len(OPENROUTER_MODELS):
+                break
+            continue
+        tried.add(model)
         try:
+            log.info("LLM: пробуем модель %s...", model)
             resp = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
@@ -193,7 +221,7 @@ def _generate_llm() -> str | None:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": OPENROUTER_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": "Придумай новый оригинальный пост про котов и технологии. Не повторяй предыдущие темы."},
@@ -204,18 +232,22 @@ def _generate_llm() -> str | None:
                 timeout=60,
             )
             if resp.status_code == 429:
-                wait = 15 * (attempt + 1)
-                log.warning("Rate limit (429), ждём %d сек...", wait)
+                wait = 10 * (attempt + 1)
+                log.warning("Rate limit (429) на %s, пробуем следующую модель...", model)
+                _model_index += 1
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
             if len(text) > 50:
+                log.info("LLM: успешно с моделью %s (%d символов)", model, len(text))
                 return text
+            log.warning("LLM: слишком короткий ответ от %s", model)
         except Exception as e:
-            log.warning("LLM генерация не удалась (попытка %d): %s", attempt + 1, e)
-            time.sleep(5)
+            log.warning("LLM генерация не удалась с %s (попытка %d): %s", model, attempt + 1, e)
+            _model_index += 1
+            time.sleep(3)
     return None
 
 
@@ -260,7 +292,7 @@ def _send_to_tg(text: str) -> bool:
 #  APScheduler jobs
 # ============================================================
 
-MIN_QUEUE = 5
+MIN_QUEUE = 3
 
 
 def job_sourcing():
@@ -275,7 +307,14 @@ def job_sourcing():
         post = _generate_one()
         if _add_post(post):
             added += 1
-        time.sleep(5)
+        time.sleep(2)
+
+    if added == 0:
+        log.warning("LLM не сработал, добавляем шаблонные посты")
+        for i in range(3):
+            post = _generate_template()
+            if _add_post(post):
+                added += 1
 
     log.info("=== SOURCING завершён: добавлено %d постов (всего: %d) ===",
              added, _pending_count())
@@ -316,6 +355,10 @@ async def handle_health(request):
     })
 
 
+async def handle_root(request):
+    return aiohttp.web.json_response({"status": "ok", "bot": "cat-in-matrix"})
+
+
 async def self_ping():
     """Self-ping каждые 10 минут чтобы Render free не заснул."""
     while True:
@@ -348,6 +391,7 @@ def main():
 
     # aiohttp + scheduler — всё внутри event loop
     app = aiohttp.web.Application()
+    app.router.add_get("/", handle_root)
     app.router.add_get("/health", handle_health)
 
     runner = aiohttp.web.AppRunner(app)
@@ -363,14 +407,14 @@ def main():
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(
             job_sourcing,
-            CronTrigger.from_crontab("0 */6 * * *"),
+            CronTrigger.from_crontab("0 */2 * * *"),
             id="sourcing",
             max_instances=1,
             coalesce=True,
         )
         scheduler.add_job(
             job_publishing,
-            CronTrigger.from_crontab("0 9,13,18,21 * * *"),
+            CronTrigger.from_crontab("*/30 7-22 * * *"),
             id="publishing",
             max_instances=1,
             coalesce=True,
