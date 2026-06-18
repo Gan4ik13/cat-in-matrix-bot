@@ -178,17 +178,27 @@ CAT_FACTS = [
     "Если кот принёс тебе мышь — он считает, что ты бесполезный охотник.",
     "Кошачий глаз отражает свет, потому что внутри установлена лазерная указка.",
     "Кот не игнорирует тебя. Он просто на паузе.",
-    "Код, написанный при мурлыкании кота, работает быстрее. Это科学но.",
+    "Код, написанный при мурлыкании кота, работает быстрее. Это научно.",
     "Кот сидит в коробке не потому что влез. Он там — потому что коробка.",
     "Если кот мяукает в 4 утра — значит, пора вставать. Или кормить.",
     "Девять жизней — это не привилегия. Это бэкап.",
     "Коты не ломают вещи. Они тестируют прочность.",
-    "Git commit made with cat on keyboard is always the best commit.",
     "Если робот-пылесос посреди ночи включился — это не баг. Это кот нажал.",
     "Кот программист: сел на клавиатуру, получил доступ ко всем системам.",
     "404 Not Found — когда кот спрятал файл.",
-    "Кот не алерт в 3 часа ночи. Это фича.",
     "Коты изобрели облако задолго до Amazon.",
+    "Кот сидит на ноутбуке не ради работы. Он тестирует thermal throttling.",
+    "Git commit с котом на клавиатуре — лучший коммит.",
+    "Ctrl+Z не работает, когда кот смахнул кружку с клавиатуры.",
+    "Кот-тестировщик: нашёл баг, сел на клавиатуру, закрыл тикет.",
+    "Если кот лежит на документе — значит, код одобрен.",
+    "Кот не лагает. Он буферизуется.",
+    "Exception handling: кот поймал мышь и выбросил исключение.",
+    "Кот-девопс: поднял кластер из коробок и запустил мониторинг.",
+    "Pull request от кота: +1000 строк мурлыкания, 0 конфликтов.",
+    "Кот не спамит. Он асинхронно рассылает приветствия.",
+    "Machine learning по котам: 100%accurate — кот всегда прав.",
+    "Кот-продакт: требует фичу «корм в 3 утра» уже который год.",
 ]
 
 CLOSINGS = [
@@ -214,7 +224,32 @@ def _next_model() -> str:
     return model
 
 
-def _strip_thinking(text: str) -> str:
+EMOJIS = ["🐱", "😼", "😺", "😸", "🐾", "🤖", "⚡", "🧠", "💻", "🔧", "🖥️", "📱", "💾", "🔌", "📡"]
+
+
+def _is_valid_post(text: str) -> bool:
+    if not text or len(text) < 10 or len(text) > 300:
+        return False
+    first_char = text.lstrip()[0] if text.lstrip() else ""
+    if first_char not in EMOJIS:
+        return False
+    english_words = re.findall(r'[a-zA-Z]{4,}', text)
+    if len(english_words) > 3:
+        return False
+    trash_patterns = [
+        "we need", "let's", "i'll", "we'll", "count", "string:",
+        "should be", "approximately", "characters", "hashtag",
+        "let me", "craft", "produce", "analysis", "short joke",
+        "start with", "must be", "no hashtags", "no analysis",
+        "something like", "write something", "ensure",
+    ]
+    text_lower = text.lower()
+    if sum(1 for p in trash_patterns if p in text_lower) >= 2:
+        return False
+    return True
+
+
+def _strip_thinking(text: str) -> str | None:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL)
     text = re.sub(r"<scratchpad>.*?</scratchpad>", "", text, flags=re.DOTALL)
@@ -224,32 +259,19 @@ def _strip_thinking(text: str) -> str:
     if "\n\n" in text:
         text = text.split("\n\n")[0]
 
-    lines = text.strip().split("\n")
-    clean_lines = []
-    for line in lines:
-        line = line.strip().strip('"').strip("'")
+    text = text.strip().strip('"').strip("'").strip()
+
+    for line in text.split("\n"):
+        line = line.strip().strip('"').strip("'").strip()
         if not line:
             continue
-        skip_patterns = [
-            "let's", "we need", "i'll", "now count", "string:",
-            "let me", "we'll", "should be", "approximately",
-            "characters", "hashtag", "let's count", "i need",
-            "but emoji", "char?", "counting", "manually",
-            "copy and count", "easier to estimate", "will write",
-            "we can", "this should", "looks good", "that works",
-            "perfect", "great", "nice", "done", "finished",
-        ]
-        if any(w in line.lower() for w in skip_patterns):
-            continue
-        if re.match(r'^[\d\.\)]+\s', line):
-            continue
-        if line.startswith("(") and line.endswith(")"):
-            continue
-        clean_lines.append(line)
+        if _is_valid_post(line):
+            return line
 
-    result = clean_lines[0] if clean_lines else text[:200]
-    result = result.strip('"').strip("'").strip()
-    return result
+    if _is_valid_post(text):
+        return text
+
+    return None
 
 
 def _get_cat_image_url() -> str | None:
@@ -324,11 +346,11 @@ def _generate_llm() -> str | None:
             resp.raise_for_status()
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
-            text = _strip_thinking(text)
-            if len(text) > 20:
-                log.info("LLM: успешно с моделью %s (%d символов)", model, len(text))
-                return text
-            log.warning("LLM: слишком короткий ответ от %s", model)
+            cleaned = _strip_thinking(text)
+            if cleaned:
+                log.info("LLM: успешно с моделью %s: %s", model, cleaned[:60])
+                return cleaned
+            log.warning("LLM: ответ от %s не прошёл валидацию: %s...", model, text[:80])
         except Exception as e:
             log.warning("LLM генерация не удалась с %s (попытка %d): %s", model, attempt + 1, e)
             _model_index += 1
