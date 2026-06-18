@@ -414,7 +414,7 @@ def main():
         )
         scheduler.add_job(
             job_publishing,
-            CronTrigger.from_crontab("*/30 7-22 * * *"),
+            CronTrigger.from_crontab("*/10 7-22 * * *"),
             id="publishing",
             max_instances=1,
             coalesce=True,
@@ -425,11 +425,18 @@ def main():
         # Self-ping в фоне
         asyncio.ensure_future(self_ping())
 
-        # Стартовый sourcing в фоне (не блокирует HTTP)
-        if _pending_count() < MIN_QUEUE:
-            log.info("Стартовое наполнение очереди...")
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(None, job_sourcing)
+        # Стартовый sourcing + публикация в фоне
+        loop = asyncio.get_event_loop()
+
+        def _initial_run():
+            if _pending_count() < MIN_QUEUE:
+                log.info("Стартовое наполнение очереди...")
+                job_sourcing()
+            if _pending_count() > 0:
+                log.info("Стартовая публикация...")
+                job_publishing()
+
+        loop.run_in_executor(None, _initial_run)
 
         # Бесконечный цикл
         try:
