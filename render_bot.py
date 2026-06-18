@@ -94,15 +94,15 @@ def _signature(text: str) -> str:
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
 
-def _add_post(body: str, image_url: str | None = None) -> bool:
+def _add_post(body: str, image_url: str | None = None, source: str = "generated") -> bool:
     sig = _signature(body)
     cur = _conn.execute("SELECT 1 FROM posts WHERE signature = ? LIMIT 1", (sig,))
     if cur.fetchone():
         log.warning("Дубликат пропущен: %s...", body[:60])
         return False
     _conn.execute(
-        "INSERT INTO posts (body, image_url, signature, status) VALUES (?, ?, ?, 'pending')",
-        (body, image_url, sig),
+        "INSERT INTO posts (body, image_url, signature, status, source) VALUES (?, ?, ?, 'pending', ?)",
+        (body, image_url, sig, source),
     )
     _conn.commit()
     return True
@@ -197,8 +197,28 @@ CAT_FACTS = [
     "Кот-девопс: поднял кластер из коробок и запустил мониторинг.",
     "Pull request от кота: +1000 строк мурлыкания, 0 конфликтов.",
     "Кот не спамит. Он асинхронно рассылает приветствия.",
-    "Machine learning по котам: 100%accurate — кот всегда прав.",
+    "Machine learning по котам: 100% accuracy — кот всегда прав.",
     "Кот-продакт: требует фичу «корм в 3 утра» уже который год.",
+    "Кот сидит на клавиатуре — это не баг, это code review.",
+    "Если кот мурлычет — значит, деплой прошёл успешно.",
+    "Кот не забивает память. Он кэширует.",
+    "Stack overflow: когда кот сбросил все книги с полки.",
+    "Кот-аналитик: три часа смотрел на графики, потом уснул.",
+    "Если кот шипит — значит, получил segmentation fault.",
+    "Кот не дебажит. Он ведёт расследование.",
+    "Kubernetes: кот запустил 12 контейнеров из коробок.",
+    "Кот не спамит кнопку. Он делает fuzz-тестирование.",
+    "Docker: кот упаковал себя в коробку и стал контейнером.",
+    "Если кот хвостом виляет — значит, деплой прошёл.",
+    "Кот-сьоресер: знает все пароли, но молчит.",
+    "CI/CD: кот автоматизировал кормление.",
+    "Redis: кот кэширует лежбища в оперативке.",
+    "Кот не игнорирует таск-трекер. Он в agile-режиме.",
+    "Если кот смотрит в экран — значит, ревьюит код.",
+    "Kafka: кот обрабатывает очередь из мурлыканий.",
+    "Кот не деплоит в пятницу. Он деплоит в 3 часа утра.",
+    "GraphQL: кот запрашивает только нужное количество корма.",
+    "Если кот свернулся в клубок — значит, компилируется.",
 ]
 
 CLOSINGS = [
@@ -358,9 +378,32 @@ def _generate_llm() -> str | None:
     return None
 
 
+_used_facts: set[str] = set()
+
+
+def _get_used_facts() -> set[str]:
+    try:
+        cur = _conn.execute(
+            "SELECT DISTINCT body FROM posts WHERE status IN ('pending', 'published') AND source = 'template' ORDER BY created_at DESC LIMIT 100"
+        )
+        return {row[0] for row in cur.fetchall()}
+    except Exception:
+        return set()
+
+
 def _generate_template() -> str:
-    fact = random.choice(CAT_FACTS)
+    global _used_facts
+    if not _used_facts:
+        _used_facts = _get_used_facts()
+
+    available = [f for f in CAT_FACTS if f not in _used_facts]
+    if not available:
+        _used_facts.clear()
+        available = CAT_FACTS
+
+    fact = random.choice(available)
     emoji = random.choice(EMOJIS)
+    _used_facts.add(fact)
     return f"{emoji} {fact}"
 
 
@@ -420,7 +463,8 @@ def job_sourcing():
     added = 0
     for i in range(target):
         post, image_url = _generate_one()
-        if _add_post(post, image_url):
+        source = "template" if post and any(f in post for f in CAT_FACTS) else "generated"
+        if _add_post(post, image_url, source):
             added += 1
         time.sleep(2)
 
@@ -429,7 +473,7 @@ def job_sourcing():
         for i in range(3):
             post = _generate_template()
             image_url = _get_cat_image_url()
-            if _add_post(post, image_url):
+            if _add_post(post, image_url, "template"):
                 added += 1
 
     log.info("=== SOURCING завершён: добавлено %d постов (всего: %d) ===",
