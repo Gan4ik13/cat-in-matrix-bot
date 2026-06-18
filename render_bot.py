@@ -219,23 +219,37 @@ def _strip_thinking(text: str) -> str:
     text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL)
     text = re.sub(r"<scratchpad>.*?</scratchpad>", "", text, flags=re.DOTALL)
     text = re.sub(r"<\|think\|>.*?<\|think\|>", "", text, flags=re.DOTALL)
-    text = re.sub(r"\*\*.*?\*\*\s*\n", "", text)
-    lines = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
+
+    text = text.strip()
+    if "\n\n" in text:
+        text = text.split("\n\n")[0]
+
+    lines = text.strip().split("\n")
+    clean_lines = []
+    for line in lines:
+        line = line.strip().strip('"').strip("'")
         if not line:
             continue
-        skip_words = [
+        skip_patterns = [
             "let's", "we need", "i'll", "now count", "string:",
             "let me", "we'll", "should be", "approximately",
             "characters", "hashtag", "let's count", "i need",
+            "but emoji", "char?", "counting", "manually",
+            "copy and count", "easier to estimate", "will write",
+            "we can", "this should", "looks good", "that works",
+            "perfect", "great", "nice", "done", "finished",
         ]
-        if any(w in line.lower() for w in skip_words):
+        if any(w in line.lower() for w in skip_patterns):
             continue
-        if line.startswith("**") and ":" in line:
+        if re.match(r'^[\d\.\)]+\s', line):
             continue
-        lines.append(line)
-    return "\n".join(lines).strip()
+        if line.startswith("(") and line.endswith(")"):
+            continue
+        clean_lines.append(line)
+
+    result = clean_lines[0] if clean_lines else text[:200]
+    result = result.strip('"').strip("'").strip()
+    return result
 
 
 def _get_cat_image_url() -> str | None:
@@ -256,10 +270,23 @@ def _get_cat_image_url() -> str | None:
     return None
 
 
+POST_PROMPTS = [
+    "Придумай короткую шутку (1-2 предложения) про кота и компьютер/интернет/программирование.",
+    "Напиши смешное наблюдение про кота, который ведёт себя как программист.",
+    "Придумай мем-подпись к фото кота: кот делает что-то странное с техникой.",
+    "Напиши короткую шутку про кота, который взломал систему или сел на клавиатуру.",
+    "Придумай забавную ситуацию: кот VS робот-пылесос / умный дом / WiFi.",
+    "Напиши шутку про кота-хакера или кота-айтишника.",
+    "Придумай короткую поговорку про котов и технологии.",
+    "Напиши смешной твит от имени кота-программиста (1-2 предложения).",
+]
+
+
 def _generate_llm() -> str | None:
     if not OPENROUTER_KEY:
         return None
     tried = set()
+    user_prompt = random.choice(POST_PROMPTS)
     for attempt in range(len(OPENROUTER_MODELS)):
         model = _next_model()
         if model in tried:
@@ -281,10 +308,10 @@ def _generate_llm() -> str | None:
                     "model": model,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": "Напиши один короткий смешной пост про кота и технологии. Максимум 200 символов. Только готовый пост, без рассуждений."},
+                        {"role": "user", "content": user_prompt},
                     ],
-                    "temperature": 0.9,
-                    "max_tokens": 150,
+                    "temperature": 1.0,
+                    "max_tokens": 100,
                 },
                 timeout=60,
             )
