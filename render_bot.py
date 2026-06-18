@@ -360,9 +360,8 @@ def _generate_llm() -> str | None:
 
 def _generate_template() -> str:
     fact = random.choice(CAT_FACTS)
-    closing = random.choice(CLOSINGS)
-    emoji = random.choice(["🐱", "😼", "😺", "😸", "🐾", "🤖", "⚡", "🧠"])
-    return f"{emoji} {fact}\n\n{closing}"
+    emoji = random.choice(EMOJIS)
+    return f"{emoji} {fact}"
 
 
 def _generate_one() -> tuple[str, str | None]:
