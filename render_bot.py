@@ -346,11 +346,6 @@ def main():
     log.info("LLM: %s", "включён" if OPENROUTER_KEY else "выключен (шаблоны)")
     log.info("Очередь: %d постов", _pending_count())
 
-    # Стартовый sourcing если пусто
-    if _pending_count() < MIN_QUEUE:
-        log.info("Стартовое наполнение очереди...")
-        job_sourcing()
-
     # aiohttp + scheduler — всё внутри event loop
     app = aiohttp.web.Application()
     app.router.add_get("/health", handle_health)
@@ -385,6 +380,12 @@ def main():
 
         # Self-ping в фоне
         asyncio.ensure_future(self_ping())
+
+        # Стартовый sourcing в фоне (не блокирует HTTP)
+        if _pending_count() < MIN_QUEUE:
+            log.info("Стартовое наполнение очереди...")
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, job_sourcing)
 
         # Бесконечный цикл
         try:
