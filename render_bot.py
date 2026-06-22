@@ -45,11 +45,11 @@ OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 PORT = int(os.environ.get("PORT", 8080))
 
 OPENROUTER_MODELS = [
+    "openrouter/free",
+    "google/gemma-4-26b-a4b-it:free",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "google/gemma-3-27b-it:free",
-    "mistralai/mistral-small-3.2-24b-instruct:free",
-    "meta-llama/llama-4-maverick:free",
-    "qwen/qwen3-30b-a3b:free",
+    "liquid/lfm-2.5-1.2b-instruct:free",
 ]
 
 # ============================================================
@@ -155,14 +155,15 @@ TOPIC = "Коты, мемы, технологии и забавные истор
 SYSTEM_PROMPT = """Ты — редактор Telegram-канала «Кот в матрице».
 
 ПРАВИЛА (строго):
-- Ответ ТОЛЬКО готовый пост. Никаких рассуждений, планов, подсчётов символов.
-- Никогда не пиши "Let's count", "We need", "I'll write" и т.п.
+- Ответить ТОЛЬКО одним готовым постом. Никаких рассуждений, планов, подсчётов символов.
+- Запрещено писать "We need", "Let's", "I'll", "Here's", "count" и т.п.
 - Никогда не показывай процесс создания поста.
 - Объём: 50–200 символов. Коротко и смешно.
-- Начни с эмодзи. Без хэштегов.
-- Стиль: короткая шутка/наблюдение про котов и технологии.
+- Начинай с эмодзи из списка: 🐱 😼 😺 😸 🐾 🤖 ⚡ 🧠 💻 🔧 🖥️ 📱 💾 🔌 📡
+- Без хэштегов, без ссылок.
+- Только один пост, без объяснений, без заголовков.
 
-Примеры ХОРОШИХ постов:
+Примеры:
 🐱 Кошки не ловят мышей. Они проводят тренировки.
 🤖 Мой кот сидит на клавиатуре. Git blame показывает на него.
 🧠 Если кот смотрит в пустоту — значит он обновляет прошивку.
@@ -269,6 +270,15 @@ def _is_valid_post(text: str) -> bool:
     return True
 
 
+META_STARTS = [
+    "we need", "we'll", "let's", "i'll", "i will", "here's", "here is",
+    "the post", "my post", "response:", "output:", "result:",
+    "craft", "produce", "generate", "create", "write",
+    "short joke", "short post", "observation", "meme caption",
+    "example", "sure", "okay", "ok,",
+]
+
+
 def _strip_thinking(text: str) -> str | None:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL)
@@ -284,6 +294,9 @@ def _strip_thinking(text: str) -> str | None:
     for line in text.split("\n"):
         line = line.strip().strip('"').strip("'").strip()
         if not line:
+            continue
+        line_lower = line.lower()
+        if any(line_lower.startswith(p) for p in META_STARTS):
             continue
         if _is_valid_post(line):
             return line
@@ -574,7 +587,7 @@ def main():
         )
         scheduler.add_job(
             job_publishing,
-            CronTrigger.from_crontab("*/10 7-22 * * *"),
+            CronTrigger.from_crontab("*/10 * * * *"),
             id="publishing",
             max_instances=1,
             coalesce=True,
