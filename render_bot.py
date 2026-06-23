@@ -43,6 +43,7 @@ TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHANNEL = os.environ.get("TG_CHANNEL", "@cat_in_matrixx")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 PORT = int(os.environ.get("PORT", 8080))
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
 
 OPENROUTER_MODELS = [
     "openrouter/free",
@@ -59,7 +60,7 @@ OPENROUTER_MODELS = [
 DB_PATH = Path(os.environ.get("DATA_DIR", "data")) / "bot.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=5)
 _conn.row_factory = sqlite3.Row
 
 
@@ -533,16 +534,16 @@ async def handle_root(request):
 
 
 async def self_ping():
-    """Self-ping каждые 10 минут чтобы Render free не заснул."""
+    """Self-ping каждые 5 минут чтобы Render free не заснул."""
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(300)
         try:
-            port = PORT
+            url = RENDER_URL or f"http://localhost:{PORT}"
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://localhost:{port}/health") as resp:
+                async with session.get(f"{url}/health", timeout=10) as resp:
                     log.info("Self-ping: %s", resp.status)
         except Exception as e:
-            log.warning("Self-ping failed: %s", e)
+            log.debug("Self-ping: %s", e)
 
 
 start_time = datetime.now()
